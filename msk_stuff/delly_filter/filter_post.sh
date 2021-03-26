@@ -1,0 +1,3 @@
+less p251_delly_results_oct19_repeatTrack_metrics.tsv |awk -F'\t' '{flag=0; if(NR==1) {print $0;flag=1} if($7!="TRA") {flag=1;} if($1==14 && ($19<30 || $20<60 || $21<70)) {flag=1;} if($4==14 && ($16<30 || $17<60 || $18<70)) {flag=1;} if(flag==0) {print $0}}' > temp
+
+perl -e 'foreach $l(`less $ARGV[0]`) {$flag=0;foreach $m(`less ~/local/msk_scripts/p219_normal_bp.txt`) {chomp($l,$m);@a=split(/\t/,$l);@b=split(/\t/,$m); if($a[0]==$b[0] and ($a[1]<$b[1]+50 and $a[1]>$b[1]-50)) {$flag=1;} if($a[3]==$b[3] and ($a[4]<($b[1]+50) and $a[4]>($b[1]-50))) {$flag=1;} } if($flag==0) {print "$l\n";} }' temp

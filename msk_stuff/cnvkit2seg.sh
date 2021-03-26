@@ -1,0 +1,1 @@
+less /ifs/res/leukgen/local/opt/leukdc/data/analyses/01/35/60135/output/I-H-130556-T2-1-D1-1.cns |grep -v "weight" |awk -v n="haha" '{OFS="\t";if(NR==1) {print "ID\tchrom\tloc.start\tloc.end\tnum.mark\tseg.mean"} print n,$1,$2,$3, $7, $5}'

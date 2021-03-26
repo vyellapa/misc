@@ -1,0 +1,12 @@
+hello = {
+  exec "echo Hello"
+}
+world = {
+  exec "echo World"
+}
+
+sam = {
+  exec "samtools view -H ${input}"
+}
+
+Bpipe.run { hello + world + sam }

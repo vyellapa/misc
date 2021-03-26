@@ -1,0 +1,1 @@
+pairoscope -W 1200 -H 800 /ifs/work/leukgen/home/yellapav/BPIPE_RNA_test/I-H-121272-T1-1-R1-1/merged.bam 11 71812909 71814804 /ifs/work/leukgen/home/yellapav/BPIPE_RNA_test/I-H-121272-T1-1-R1-1/merged.bam 14 105241091 105242531 -o see.png

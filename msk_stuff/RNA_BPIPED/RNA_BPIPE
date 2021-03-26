@@ -1,0 +1,34 @@
+align = {
+  exec "python RNA_STAR.py star_align --fastq1 $R1 --fastq2 $R2","aln"
+}
+
+fusion = {
+  exec "python RNA_STAR.py star_fusion --fastq1 $R1 --fastq2 $R2 --sample_name $NAME","aln"
+}
+
+rg_tag = {
+  exec "python RNA_STAR.py add_rgid --bam Aligned.sortedByCoord.out.bam --sample_name $NAME","salmon"
+}
+
+aln_metrics = {  
+  exec "python RNA_STAR.py add_rgid --bam Aligned.sortedByCoord.out.bam --sample_name $NAME","salmon"
+}
+
+htseq = {  
+  exec "echo Running samtools view and htseq-counts"
+  exec "python RNA_STAR.py counts_htseq --bam Aligned.sortedByCoord.out.bam --sample_name $NAME","salmon"
+}
+
+
+salmon = {  
+  exec "echo Running salmon"
+  exec "python RNA_STAR.py salmon --fastq1 $R1 --fastq2 $R2 --threads $T --output $NAME","salmon"
+}
+
+rna_metrics = {
+  exec "echo Running samtools view and htseq-counts"
+  exec "python RNA_STAR.py collect_rna_metrics --bam Aligned.sortedByCoord.out.bam --sample_name $NAME","salmon"
+}
+
+
+Bpipe.run { fusion + align + [aln_metrics, htseq, salmon, rna_metrics] }

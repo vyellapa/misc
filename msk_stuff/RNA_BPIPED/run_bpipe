@@ -1,0 +1,1 @@
+bsub -oo log bpipe run -p R1=XYZXYZ_1.fastq -p R2=XYZXYZ_2.fastq -p T=1 -p NAME=XYZXYZ RNA_BPIPE 

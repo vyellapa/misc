@@ -1,0 +1,95 @@
+
+####################################################################################################
+# Starting pipeline at Mon May 01 11:16:36 EDT 2017
+# Input files:  null
+# Output Log:  .bpipe/logs/14892.log
+# Stage hello
+echo Hello
+# Stage world
+echo World
+# ################ Finished at Mon May 01 11:16:39 EDT 2017 Duration = 3.492 seconds #################
+
+
+####################################################################################################
+# Starting pipeline at Mon May 01 11:19:55 EDT 2017
+# Input files:  null
+# Output Log:  .bpipe/logs/15511.log
+
+####################################################################################################
+# Starting pipeline at Mon May 01 11:20:29 EDT 2017
+# Input files:  null
+# Output Log:  .bpipe/logs/15681.log
+# Stage hello
+echo Hello
+# Stage world
+echo World
+# Stage sam
+samtools
+# ################ Finished at Mon May 01 11:20:31 EDT 2017 Duration = 1.457 seconds #################
+
+
+####################################################################################################
+# Starting pipeline at Mon May 01 11:32:44 EDT 2017
+# Input files:  null
+# Output Log:  .bpipe/logs/17830.log
+# Stage hello
+echo Hello
+# Stage world
+echo World
+# Stage sam
+samtools view -H /ifs/res/leukgen/local/opt/leukdc/data/workflows/25/65/12565/data/bam/E-H-109096-T1-1-D1-1.bam
+# ################ Finished at Mon May 01 11:32:45 EDT 2017 Duration = 0.846 seconds #################
+
+
+####################################################################################################
+# Starting pipeline at Mon May 01 11:48:29 EDT 2017
+# Input files:  /ifs/res/leukgen/local/opt/leukdc/data/workflows/25/65/12565/data/bam/E-H-109096-T1-1-D1-1.bam
+# Output Log:  .bpipe/logs/20302.log
+# Stage hello
+echo Hello
+# Stage world
+echo World
+# Stage sam
+samtools view -H /ifs/res/leukgen/local/opt/leukdc/data/workflows/25/65/12565/data/bam/E-H-109096-T1-1-D1-1.bam
+# ################ Finished at Mon May 01 11:48:31 EDT 2017 Duration = 1.394 seconds #################
+
+
+####################################################################################################
+# Starting pipeline at Mon May 01 11:48:57 EDT 2017
+# Input files:  /ifs/res/leukgen/local/opt/leukdc/data/workflows/25/65/12565/data/bam/E-H-109096-T1-1-D1-1.bam
+# Output Log:  .bpipe/logs/20482.log
+# Stage hello
+echo Hello
+# Stage world
+echo World
+# Stage sam
+samtools view -H /ifs/res/leukgen/local/opt/leukdc/data/workflows/25/65/12565/data/bam/E-H-109096-T1-1-D1-1.bam.bam
+# ################ Finished at Mon May 01 11:48:58 EDT 2017 Duration = 1.031 seconds #################
+
+
+####################################################################################################
+# Starting pipeline at Mon May 01 11:49:12 EDT 2017
+# Input files:  /ifs/res/leukgen/local/opt/leukdc/data/workflows/25/65/12565/data/bam/E-H-109096-T1-1-D1-1
+# Output Log:  .bpipe/logs/20618.log
+# ################ Finished at Mon May 01 11:49:13 EDT 2017 Duration = 0.224 seconds #################
+
+
+####################################################################################################
+# Starting pipeline at Mon May 01 11:49:30 EDT 2017
+# Input files:  /ifs/res/leukgen/local/opt/leukdc/data/workflows/25/65/12565/data/bam/E-H-109096-T1-1-D1-1
+# Output Log:  .bpipe/logs/20960.log
+# ################ Finished at Mon May 01 11:49:30 EDT 2017 Duration = 0.129 seconds #################
+
+
+####################################################################################################
+# Starting pipeline at Mon May 01 11:49:37 EDT 2017
+# Input files:  /ifs/res/leukgen/local/opt/leukdc/data/workflows/25/65/12565/data/bam/E-H-109096-T1-1-D1-1.bam
+# Output Log:  .bpipe/logs/21055.log
+# Stage hello
+echo Hello
+# Stage world
+echo World
+# Stage sam
+samtools view -H /ifs/res/leukgen/local/opt/leukdc/data/workflows/25/65/12565/data/bam/E-H-109096-T1-1-D1-1.bam
+# ################ Finished at Mon May 01 11:49:38 EDT 2017 Duration = 0.815 seconds #################
+
