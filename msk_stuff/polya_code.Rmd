@@ -1,0 +1,968 @@
+---
+title: "polya_clean_v2"
+author: "Venkata Yellapantula"
+date: "5/27/2020"
+output: html_document
+---
+
+
+
+```{r load_packages, include=FALSE}
+packages = c("dplyr","GenomicRanges","biomaRt","RColorBrewer","reshape2","data.table","limma","ComplexHeatmap")
+sapply(packages,require,character.only = TRUE)
+```
+
+```{r load_biomart, include=FALSE}
+ensembl_75 = useMart(biomart="ENSEMBL_MART_ENSEMBL", host="feb2014.archive.ensembl.org", path="/biomart/martservice", dataset="hsapiens_gene_ensembl")
+ex=getBM(attributes=c('ensembl_exon_id','ensembl_transcript_id','ensembl_gene_id','external_gene_id','chromosome_name','start_position','end_position','strand','3_utr_start','3_utr_end'), mart = ensembl_75)
+ex = ex %>% filter(chromosome_name %in% grep("^H|^G|^L",unique(ex$chromosome_name), value=T, invert=T))
+fwrite(ex,"/Users/yellapav/Desktop/ipa/data/ensembl_v75.txt",col.names = T, row.names = F, append = F, quote = F, sep = "\t")
+ex = fread("/Users/yellapav/Desktop/ipa/data/ensembl_v75.txt",header=T,sep="\t")
+```
+
+```{r run_ttest, include=FALSE}
+###### t-test results ########
+all.df = list()
+for(i in (list.files("/Users/yellapav/Desktop/ipa/data/ttests", pattern="_out.txt$", full.names=TRUE))) { 
+  r = fread(i,header=F,sep="\t", fill = TRUE)
+  all.df[[i]] = r
+}
+
+r = do.call(rbind, all.df)
+
+# Filter the IPA list if
+# 1) Less than a median depth of 15 on 3' or 5' side of IPA 
+# 2) Difference > 5 and 3) p-value < 0.001
+rr = r %>% dplyr::filter(!is.na(V1)) %>% dplyr::filter((V5>15 | V6>15) & abs(V5-V6)>5 & V4<0.001)
+
+# Annotate t-test results 
+ex.gene = ex %>% 
+  dplyr::select(c(ensembl_gene_id,external_gene_id,chromosome_name,start_position,end_position,strand)) %>% 
+  distinct()
+
+gr.seg = GRanges(seqnames=Rle(ex.gene$chromosome_name), 
+                 IRanges(as.numeric(as.character(ex.gene$start_position)), as.numeric(as.character(ex.gene$end_position))))
+gr.cyto = GRanges(seqnames=Rle(rr$V1), 
+                  IRanges(as.numeric(as.character(rr$V2)), as.numeric(as.character(rr$V3))))
+overlapGenes <- findOverlaps(gr.cyto, gr.seg)
+df1 = data.frame(ex.gene[subjectHits(overlapGenes),], rr[queryHits(overlapGenes),]) %>% distinct() 
+
+# Limit to cancer genes 
+cgc = read.table("~/local/resources/cgc_xie556__1col.tsv",header=F)
+df1.cgc = df1 %>% dplyr::filter(external_gene_id %in% cgc$V1)
+diffs = (df1.cgc) %>% dplyr::mutate(diff=V5-V6) %>% 
+  dplyr::group_by(ensembl_gene_id) %>% 
+  summarise(med=median(diff)) %>% 
+  as.data.frame() %>% 
+  dplyr::right_join(df1.cgc, by = "ensembl_gene_id")
+
+colnames(diffs) = c("ensembl_gene_id","median_diff","external_gene_id","chromosome_name","start_position","end_position","strand","V1","V2","V3","pval","meanA","meanB","sample")
+
+write.table(diffs,file="/Users/yellapav/Desktop/ipa/data/intron_100bp/ttests_annotated.txt", append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=TRUE,quote = FALSE)
+
+
+
+#### Recheck 
+diffs.all = df1 %>% dplyr::mutate(diff=V5-V6) %>% dplyr::group_by(ensembl_gene_id) %>% 
+  summarise(med=median(diff)) %>% as.data.frame() %>% dplyr::right_join(df1, by = "ensembl_gene_id")
+colnames(diffs.all) = c("ensembl_gene_id","median_diff","external_gene_id","chromosome_name","start_position","end_position","strand","V1","V2","V3","pval","meanA","meanB","sample")
+
+diffs_t = diffs %>% 
+  dplyr::mutate(type=ifelse(sample %in% unique(grep("SRR",diffs$sample,invert = T, value = T)), "NOM","TUM")) %>% 
+  dplyr::mutate(key=paste(V1,V2,V3,sep=":"))
+
+nom_tum = diffs_t[,c(15,16)] %>% table() %>% 
+  as.data.frame() %>% 
+  dcast(key ~ type, value.var = "Freq") %>% 
+  as.data.frame() %>% 
+  dplyr::left_join(distinct(diffs_t[,c(3,16)]),by = "key")
+
+nom_alone = nom_tum %>% dplyr::filter(NOM>0 & TUM==0)
+tum_alone = nom_tum %>% dplyr::filter(NOM==0 & TUM>7 & TUM<472)
+tum_alone_3 = nom_tum %>% dplyr::filter(NOM==0 & TUM>3 & TUM<472)
+
+
+### In order to get the low hanging fruit include genes
+### 1) have no evidence to IPA usage 2) Present in atleast 1% (N>7) and less than 60% (n<472) samples 
+
+RRR = diffs_t[,c(15,16)] %>% table() %>% 
+  as.data.frame() %>% dcast(key ~ type, value.var = "Freq") %>% 
+  as.data.frame() %>% 
+  dplyr::left_join(distinct(diffs_t[,c(3,16)]),by = "key") %>% 
+  dplyr::filter(NOM==0 & TUM>7 & TUM<472) %>% dplyr::mutate(percent = round(TUM/(8.03), digits = 1)) %>% dplyr::select(-c(NOM)) %>% arrange((external_gene_id))
+
+fwrite(RRR,file="/Users/yellapav/Desktop/ipa/temp/RRR.txt", append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=FALSE,quote = FALSE)
+```
+
+
+```{r IPA_ratio, include=FALSE}
+############## Ratio of IPA #########################################
+
+counts = fread("/Users/yellapav/Desktop/ipa/data/rversion.txt.gz", sep = "\t" , header =T) #Read the count matrix
+counts = distinct(counts)
+dim(counts)
+
+# keep only those exons where atleast 10 
+counts$maxVal=apply(counts[,5:dim(counts)[2]], 1, max) 
+counts = counts %>% dplyr::filter(maxVal>10) %>% dplyr::select(-c("maxVal")) %>% distinct()
+dim(counts)
+cnames = strsplit2(colnames(counts), "_counts") %>% as.data.frame() %>% dplyr::select(V1) 
+colnames(counts) = as.character(cnames$V1)
+fwrite(counts,file="/Users/yellapav/Desktop/ipa/data/counts_gtf75_tum_nom_filter.txt.gz", append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=TRUE,quote = FALSE)
+#counts = fread("/Users/yellapav/Desktop/ipa/data/counts_gtf75_tum_nom_filter.txt", sep = "\t" , header =T)
+
+ex=getBM(attributes=c('ensembl_exon_id','ensembl_transcript_id','ensembl_gene_id','external_gene_id','chromosome_name','exon_chrom_start','exon_chrom_end','strand','rank'), mart = ensembl_75)
+ex = ex %>% filter(chromosome_name %in% grep("^H|^G|^L",unique(ex$chromosome_name), value=T, invert=T))
+
+counts = counts %>% dplyr::left_join(ex, by = c('Geneid' = 'ensembl_exon_id'))
+
+results = read.table("/Users/yellapav/Desktop/ipa/data/intron_100bp/ttests_annotated.txt", header = T, sep = "\t")
+#results = results %>% dplyr::select(-c("pval","meanA","meanB","sample","median_diff")) %>% distinct()
+
+#counts1 = dplyr::left_join(counts, results, by = c("ensembl_gene_id"))
+#write.table(counts,file="/Users/yellapav/Desktop/ipa/data/all_22_filter_na.txt", append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=TRUE,quote = FALSE)
+#ex = 1
+#counts = counts[!(is.na(counts$meanA)),]
+
+
+
+
+
+l = list()
+mer = results %>% dplyr::mutate(key=paste(V1,V2,V3,sep=":")) %>% dplyr::select(external_gene_id,key) %>% distinct()
+
+for(i in unique(results$ensembl_gene_id)) {
+  print(i)
+  #subr = results %>% dplyr::filter(ensembl_gene_id==i)
+  subr = results %>% dplyr::filter(ensembl_gene_id==i) %>% dplyr::mutate(key=paste(V1,V2,V3,sep=":"))
+  subc = counts %>% dplyr::filter(ensembl_gene_id==i)
+  m = melt(subc, id.vars = c("Geneid","Chr","ensembl_transcript_id","ensembl_gene_id","external_gene_id","chromosome_name","Start","End","exon_chrom_start","exon_chrom_end","strand","rank"))
+  scomb = left_join(m,subr,by = c("variable" = "sample"))
+  
+  for(j in unique(subr$key)){
+    coords = data.frame(matrix(unlist(strsplit(j,":")),byrow = T, ncol=3))
+    
+    coords$X1 = as.character(coords$X1)
+    coords$X2 = as.numeric(as.character(coords$X2))
+    coords$X3 = as.numeric(as.character(coords$X3))
+    
+    if(unique(as.character(scomb$strand.x))=="1") {
+      pre = scomb %>% dplyr::filter(exon_chrom_end<coords$X2) %>% distinct()
+      pos = scomb %>% dplyr::filter(exon_chrom_end>coords$X2) %>% distinct()
+      
+    }
+    
+    
+    if(as.character(scomb$strand.x)=="-1") {
+      pre = scomb %>% dplyr::filter(exon_chrom_end>coords$X2) %>% distinct()
+      pos = scomb %>% dplyr::filter(exon_chrom_end<coords$X2) %>% distinct()
+    }
+    
+    pre.neg=pre[is.na(pre$meanA), ]
+    pre.pos=pre[!(is.na(pre$meanA)), ]
+    
+    pos.neg=pos[is.na(pos$meanA), ]
+    pos.pos=pos[!(is.na(pos$meanA)), ]
+    
+    psn = pos.neg %>% group_by(variable) %>% summarise(sum.counts = sum(value)) %>% 
+      dplyr::right_join(pos.neg, by = c("variable")) %>% distinct() %>% dplyr::mutate(categ="post.neg",key=j)
+    psp = pos.pos %>% group_by(variable) %>% summarise(sum.counts = sum(value)) %>% 
+      dplyr::right_join(pos.pos, by = c("variable")) %>% distinct() %>% dplyr::mutate(categ="post.pos",key=j)
+    
+    prn = pre.neg %>% group_by(variable) %>% summarise(sum.counts = sum(value)) %>% 
+      dplyr::right_join(pre.neg, by = c("variable")) %>% distinct() %>% dplyr::mutate(categ="pre.neg",key=j)
+    prp = pre.pos %>% group_by(variable) %>% summarise(sum.counts = sum(value)) %>% 
+      dplyr::right_join(pre.pos, by = c("variable")) %>% distinct() %>% dplyr::mutate(categ="pre.pos",key=j)
+    
+    psn = rbind(psn,psp)
+    psn = rbind(psn,prn)
+    psn = rbind(psn,prp)
+    l[[i]] = psn
+  }
+}
+
+r = do.call(rbind,l)
+r = r %>% 
+  dplyr::select(-c("external_gene_id.y","ensembl_gene_id.y","chromosome_name.y","start_position","end_position","strand.y" )) %>% 
+  distinct()
+#r[r$variable %in% grep("SRR",unique(r$variable), value = T,invert = T),]$categ="NORMAL"
+
+
+rrr = r %>% dplyr::select(variable,sum.counts,key,categ) %>%
+  distinct()%>% group_by(variable,key,categ) %>% 
+  summarise(sum=sum(sum.counts))
+
+rr=dcast((rrr),variable+key~categ,value.var="sum")
+sub1 = (rr) %>% dplyr::filter(post.pos!="NA") %>% dplyr::mutate(ratio=pre.pos/(pre.pos+post.pos),type="POS")
+
+sub2 = (rr) %>% dplyr::filter(is.na(post.pos)) %>% dplyr::mutate(ratio=pre.neg/(pre.neg+post.neg), type="NEG")
+
+sub1=rbind(sub1,sub2)
+
+sub1 = dplyr::left_join(sub1,mer,by = "key")
+sub1[sub1$variable %in% grep("SRR",unique(sub1$variable), value = T,invert = T),]$type="NORMAL"
+
+l = list()
+for(z in unique(sub1$external_gene_id)) { sub11 = sub1 %>% dplyr::filter(external_gene_id==z); sub111 = sub11 %>% dplyr::mutate(key1=paste(key,external_gene_id,sep="_")) %>% dplyr::filter(type!="NORMAL");
+for(zi in unique(sub111$key1)) {pos = sub111 %>% filter(type=="POS"); neg = sub111 %>% filter(type=="NEG"); pval=10;pval=try(wilcox.test(pos$ratio,neg$ratio)$p.value, silent = TRUE);
+if(nrow(pos)>3 & pval<0.05) {l[[z]]=pval}}
+}
+
+ll = as.data.frame(do.call(rbind,l) )
+colnames(ll) = c("pval"); ll$gene = rownames(ll);
+
+ll = ll[ll$gene %in% unique(tum_alone_3$external_gene_id),]
+
+#for(z in unique(sub1$external_gene_id)) {
+  for(z in unique(ll$gene)) {
+  
+  sub11 = sub1 %>% dplyr::filter(external_gene_id==z)
+  pdf(sprintf("~/Desktop/ipa/plots/ratio/manual_results/%s_nom.pdf",z))
+  p = ggplot(sub11,aes(key,ratio,fill=type))+geom_boxplot(outlier.size=0,aes(fill=type), alpha=0.05) + 
+    theme_bw(base_size=15)+ xlab(sprintf("%s (%s)",z,l[[z]]))+ylab("Pre / Post+Pre (exon counts)")+ 
+    geom_jitter(size=3,position = position_dodge(width=0.75),alpha=0.45,aes(group=type,color=factor(type)))+
+    theme(axis.text.x = element_text(angle = 0, hjust = 1),legend.position="top")
+  
+  print(p)
+  dev.off()
+  
+}
+
+
+
+
+###### FRA IDEA ######
+ex = fread("/Users/yellapav/Desktop/ipa/data/ensembl_v75.txt",header=T,sep="\t")
+ex.gene = ex %>% dplyr::select(ensembl_gene_id,external_gene_id,chromosome_name,start_position,end_position,strand) %>%
+  distinct()
+
+ex.exon = ex %>% dplyr::select(ensembl_gene_id,ensembl_exon_id) %>% distinct()
+
+bb = read.table("/Users/yellapav/Desktop/ipa/ipa.non.exonUTR.125bp.bed",header=F,sep="\t")
+bb$V2 = bb$V2+125
+bb$V3 = bb$V3-125
+
+gr.cyto = GRanges(seqnames=Rle(ex.gene$chromosome_name), IRanges(ex.gene$start_position, ex.gene$end_position))
+gr.seg = GRanges(seqnames=Rle(bb$V1), IRanges(bb$V2, bb$V3))
+
+overlapGenes <- findOverlaps(gr.cyto, gr.seg)
+df1 = data.frame(bb[subjectHits(overlapGenes),], ex.gene[queryHits(overlapGenes),]) %>% unique() %>% dplyr::mutate(key1=paste(V1,V2,V3,sep=":"))
+
+df1 = left_join(df1,ex.exon, by ="ensembl_gene_id")
+#gr.seg = GRanges(seqnames=Rle(df1$V1), IRanges(as.numeric(as.character(df1$V2)), as.numeric(as.character(df1$V3))))
+
+
+
+
+exon.coords = fread("/Users/yellapav/Desktop/ipa/gtf_counts//SRR1567003_counts_output.txt",header=T,sep="\t")
+exon.coords = exon.coords %>% dplyr::select(Geneid,Chr,Start,End) %>% distinct()
+df1 = left_join(df1,exon.coords, by =c("ensembl_exon_id" = "Geneid"))
+
+
+all.df = list()
+  for(i in (list.files("/Users/yellapav/Desktop/ipa/gtf_counts/", pattern="_counts_output.txt$", full.names=TRUE))) {
+    print(i)
+    r = fread(i,header=T,sep="\t")
+    colnames(r) = gsub("/Aligned.sortedByCoord.out.bam","",colnames(r))
+    r[,7]=r[,7]/r[,6]
+    
+    if(basename(i) == "CD138plus_NORMAL_BM7_counts_output.txt") {r = r[,c(1,7)]} else {r = r[,c(7)]}
+    #r = r[,c(1,7)]
+    #colnames(r) = c("Geneid","value")
+    #r$sample = gsub("_counts_output.txt","",basename(i))
+    #r = left_join(r,df1,by = c("Geneid" = "ensembl_exon_id"))
+    #r = r[!(is.na(r$V1)),]
+    all.df[[basename(i)]] = r
+  }
+
+rr = do.call(cbind, all.df)
+colnames(rr)[1]="Geneid"
+rr = rr[rr$Geneid %in% unique(df1$ensembl_exon_id),]
+rrr = rr
+colnames(rr) = strsplit2(colnames(rr),"_c")[,1]
+
+df1 = df1 %>% dplyr::mutate(key2 = paste(ensembl_gene_id,key1,sep="_")) %>% dplyr::mutate(key2 = paste(external_gene_id,key2,sep="_"))
+
+all.df = list()
+for(i in unique(df1$key2)){
+  print(i)
+  df1.sub = df1 %>% dplyr::filter(key2==i) %>% dplyr::select(V1,V2,V3,ensembl_gene_id,external_gene_id,strand,ensembl_exon_id,Chr,Start,End,key2)
+  
+  if(unique(as.character(df1.sub$strand))=="1") {
+    pre = df1.sub %>% dplyr::filter(End<V3) %>% distinct()
+    pos = df1.sub %>% dplyr::filter(Start>V3) %>% distinct()
+    
+  }
+  
+  if(as.character(scomb$strand.x)=="-1") {
+    pre = df1.sub %>% dplyr::filter(End<V3) %>% distinct()
+    pos = df1.sub %>% dplyr::filter(Start>V3) %>% distinct()
+  }
+  
+  pre.sub = left_join(pre,rr, by = c("ensembl_exon_id" = "Geneid")) %>% distinct()
+  pre.m = melt(pre.sub, id.vars=c("V1","V2","V3","ensembl_gene_id","external_gene_id","strand","ensembl_exon_id","Chr","Start","End","key2")) %>% distinct()
+  pre.m = pre.m %>% dplyr::group_by(variable) %>% summarise(median.pre.depth=median(value)) %>% as.data.frame() 
+  
+  pos.sub = left_join(pos,rr, by = c("ensembl_exon_id" = "Geneid")) %>% distinct()
+  pos.m = melt(pos.sub, id.vars=c("V1","V2","V3","ensembl_gene_id","external_gene_id","strand","ensembl_exon_id","Chr","Start","End","key2")) %>% distinct()
+  pos.m = pos.m %>% dplyr::group_by(variable) %>% summarise(median.post.depth=median(value)) %>% as.data.frame()
+  
+  ratio = left_join(pre.m, pos.m, by="variable")
+  ratio$key = i
+  
+  all.df[[i]] = ratio
+  
+}
+
+ratio = do.call(rbind, all.df)
+ratio = left_join(ratio, df1, by = c("key" = "key2"))
+ratio = ratio %>% dplyr::select(variable,median.pre.depth,median.post.depth,strand,external_gene_id,key) %>% distinct()
+ratio = (ratio) %>% dplyr::mutate(sum=median.pre.depth+median.post.depth) %>% dplyr::mutate(ratio=ifelse(sum>0,median.pre.depth/sum,sum))
+write.table(ratio,"~/Desktop/ipa/data/IPA_ratio_median_method.txt",col.names = T, row.names = F, append = F, quote = F, sep = "\t")
+
+ratio.prep = ratio
+ratio.prep$type = "TUMOR"; ratio.prep[ratio.prep$variable %in% unique(grep("SRR",ratio$variable,value=TRUE,invert = T)), ]$type = "NORMAL"
+
+func = function(exon) {m.sub = ratio.prep %>% dplyr::filter(key==exon);
+m.sub.pos = m.sub %>% dplyr::filter(type=="NORMAL") ;
+m.sub.neg = m.sub %>% dplyr::filter(type=="TUMOR") ;
+return(c(exon,wilcox.test(m.sub.pos$ratio, m.sub.neg$ratio)$p.value))
+}
+
+pvals = do.call(rbind,lapply((unique(ratio.prep$key)),func))
+pvals = as.data.frame(pvals) %>% dplyr::mutate(V2=as.numeric(as.character(V2)))
+pvals.filter = pvals %>% dplyr::filter(as.numeric(as.character(V2))<0.05) %>% distinct() %>% arrange(V2)
+
+
+
+ratio.mat =  dcast(ratio, key ~ variable, value.var = "ratio")
+
+ratio.mat = ratio.mat[ratio.mat$key %in% unique(head(pvals.filter[,1],n=60)),]
+ann = as.data.frame(colnames(ratio.mat)[-1])
+colnames(ann) = c("V1")
+ann = (ann) %>% dplyr::mutate(type= ifelse(V1 %in% grep("SRR",ann$V1,value=T), "TUMOR","NORMAL"))
+types = ann$type;color.annot=c("#7D093B","#60B96C","#D31996","#E9E9E9"); names(color.annot) = c("NORMAL","TUMOR","DEL","NULL")
+
+#ha = HeatmapAnnotation(type = types, 
+#                       FAM46C = colan$status, 
+#                       Translocation = colan.t$status,
+#                       col = list(type = c(color.annot[1:2]), 
+#                                  FAM46C = c("DEL" = "#D31996","NULL" = "#E9E9E9","MUT" = "#52A20D", "DEL_MUT" = "#3F3451"),
+#                                  Translocation = c("CCND1" = "#2FAD3B","NULL" = "#E9E9E9","CCND3" = "#CF0535", 
+#                                                   "HRD" = "#3D1C00", "MAF" = "#FEA014", "MAFB" = "#511A8E", "MMSET" = "#0580E7", "MYC" = "#FA2A00")) )
+
+ha = HeatmapAnnotation(type = types, 
+                       col = list(type = c(color.annot[1:2])) )
+
+temp = strsplit2(ratio.mat$key,"_") %>% as.data.frame() %>% dplyr::mutate(key = paste(V1,V3,sep="_")) %>% dplyr::select(key) 
+rownames(ratio.mat) = temp$key; ratio.mat = ratio.mat %>% dplyr::select(-c(key)) 
+pdf("~/Desktop/hm1.pdf",width = 16, height = 10)
+Heatmap(as.matrix(ratio.mat), top_annotation = ha, clustering_method_columns = "ward.D",clustering_distance_columns =  "euclidean", column_km = 6)
+dev.off()
+
+cl = kmeans(t(as.matrix(ratio.mat)), centers = 4)$cluster
+cl=as.data.frame(cl); cl$sample = rownames(cl)
+
+clinic= read.table("~/Desktop/ipa/commpass_clinic.txt",sep = "\t",header = T)
+clinic[is.na(clinic)] = 0
+
+colan = left_join(clinic, mmrf[,c(1,4)], by = c("sample" = "patient"))
+colan = left_join(cl, colan, by = c("sample" = "Run"))
+
+
+#colan = colan[!is.na(colan$sample.y),]
+#colan = left_join(colan,clinic,by = c("patient" = "sample"))
+
+fish = function(index,cluster=1) {
+p = table(colan[,c(1,index)]) %>% as.data.frame() %>% dplyr::filter(cl==cluster) %>% dplyr::select(-cl) %>% dplyr::arrange(desc(.[[1]])) %>% dplyr::select(Freq)
+n = table(colan[,c(1,index)]) %>% as.data.frame() %>% dplyr::filter(cl!=cluster) %>% dplyr::select(-cl) %>% dplyr::group_by(.[[1]]) %>% summarise(sum=sum(Freq)) %>% as.data.frame() %>% dplyr::arrange(desc(.[[1]])) %>% dplyr::select(sum)
+pval = fisher.test(matrix(c(as.vector(p$Freq), as.vector(n$sum)),nrow=2,byrow = T))$p.value
+return(c(colnames(colan)[index],cluster,pval))
+}
+
+cl1 = as.data.frame(matrix(unlist(lapply(26:103,fish)),byrow=T,ncol=3))
+cl2 = as.data.frame(matrix(unlist(lapply(26:103,fish)),byrow=T,ncol=3))
+cl3 = as.data.frame(matrix(unlist(lapply(26:103,fish)),byrow=T,ncol=3))
+cl4 = as.data.frame(matrix(unlist(lapply(26:103,fish)),byrow=T,ncol=3))
+
+cl1 = rbind(cl1,cl2)
+cl1 = rbind(cl1,cl3)
+cl1 = rbind(cl1,cl4)
+cl1$V3 = as.numeric(as.character(cl1$V3))
+cl1$padj =  p.adjust(cl1$V3, method = "fdr")
+cl1 %>% dplyr::filter(padj<0.05)
+
+#colan = colan[!is.na(colan$sample.y),]
+colan.FAM = colan %>% dplyr::mutate(sum = FAM46C+delFAM46c) %>% 
+  dplyr::mutate(status = ifelse(sum==0, "NA", 
+                                ifelse(sum==2,"DEL_MUT", 
+                                       ifelse(FAM46C==1,"MUT","DEL"))))
+
+colan.IRF4 = colan %>% dplyr::mutate(status = ifelse(IRF4==1, "MUT","NA"))
+colan.NRAS = colan %>% dplyr::mutate(status = ifelse(NRAS==1, "MUT","NA"))
+colan.del12p13 = colan %>% dplyr::mutate(status = ifelse(del12p13==1, "DEL","NA"))
+colan.RPRD1B = colan %>% dplyr::mutate(status = ifelse(RPRD1B==1, "MUT","NA"))
+
+colan.t = colan %>% dplyr::mutate(status = ifelse(t_CCND1==1, "CCND1", 
+                      ifelse(HRD==1,"HRD", 
+                          ifelse(t_MYC==1,"MYC",
+                              ifelse(t_MAFB==1,"MAFB", 
+                                  ifelse(t_CCND3==1,"CCND3",
+                                          ifelse(t_MAF==1,"MAF", 
+                                              ifelse(t_MMSET==1,"MMSET","NA"))))))))
+
+
+                                
+
+ha = HeatmapAnnotation(type = types, 
+                       FAM46C = colan.FAM$status, 
+                       IRF4 = colan.IRF4$status,
+                       NRAS = colan.NRAS$status,
+                       RPRD1B = colan.RPRD1B$status,
+                       del12p13 = colan.del12p13$status,
+                       Translocation = colan.t$status,
+                       col = list(type = c(color.annot[1:2]), 
+                                  FAM46C = c("DEL" = "#D31996","NA" = "#E9E9E9","MUT" = "#52A20D", "DEL_MUT" = "#3F3451"),
+                                  del12p13 = c("DEL" = "#D31996","NA" = "#E9E9E9"),
+                                  IRF4 = c("NA" = "#E9E9E9","MUT" = "#52A20D"),
+                                  NRAS = c("NA" = "#E9E9E9","MUT" = "#52A20D"),
+                                  RPRD1B = c("NA" = "#E9E9E9","MUT" = "#52A20D"),
+                                  Translocation = c("CCND1" = "#2FAD3B","NA" = "#E9E9E9","CCND3" = "#CF0535", 
+                                                    "HRD" = "#3D1C00", "MAF" = "#FEA014", "MAFB" = "#511A8E", "MMSET" = "#0580E7", "MYC" = "#FA2A00")), na_col = "#E9E9E9")
+
+pdf("~/Desktop/hm1.pdf",width = 20, height = 16)
+Heatmap(as.matrix(ratio.mat), top_annotation = ha, clustering_method_columns = "ward.D",clustering_distance_columns =  "euclidean", column_km = 5)
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+######
+
+bb = read.table("/Users/yellapav/Desktop/ipa/ipa.non.exonUTR.125bp.bed",header=F,sep="\t")
+
+ex.gene=getBM(attributes=c('ensembl_gene_id','external_gene_id','chromosome_name','start_position','end_position','strand'), mart = ensembl_75)
+ex.gene = ex.gene %>% filter(chromosome_name %in% grep("^H|^G|^L",unique(ex.gene$chromosome_name), value=T, invert=T)) %>% distinct()
+
+gr.seg = GRanges(seqnames=Rle(ex.gene$chromosome_name), IRanges(as.numeric(as.character(ex.gene$start_position)), as.numeric(as.character(ex.gene$end_position))))
+gr.cyto = GRanges(seqnames=Rle(bb$V1), IRanges(as.numeric(as.character(bb$V2)), as.numeric(as.character(bb$V3))))
+overlapGenes <- findOverlaps(gr.cyto, gr.seg)
+df1 = data.frame(ex.gene[subjectHits(overlapGenes),], bb[queryHits(overlapGenes),]) %>% distinct() 
+df1$V2 = df1$V2+125
+df1$V3 = df1$V3-125
+
+mer = df1 %>% dplyr::mutate(key=paste(V1,V2,V3,sep=":")) %>% dplyr::select(external_gene_id,key) %>% distinct()
+
+l = list(); zz = 0 
+for(i in (unique(df1$ensembl_gene_id))) {
+  print(c(i,zz))
+  zz = zz + 1
+  #subr = results %>% dplyr::filter(ensembl_gene_id==i)
+  subr = df1 %>% dplyr::filter(ensembl_gene_id==i) %>% dplyr::mutate(key=paste(V1,V2,V3,sep=":"))
+  subc = counts %>% dplyr::filter(ensembl_gene_id==i)
+  m = melt(subc, id.vars = c("Geneid","Chr","ensembl_transcript_id","ensembl_gene_id","external_gene_id","chromosome_name","Start","End","exon_chrom_start","exon_chrom_end","strand","rank"))
+  scomb = left_join(m,subr,by = "ensembl_gene_id")
+  
+  for(j in unique(subr$key)){
+    coords = data.frame(matrix(unlist(strsplit(j,":")),byrow = T, ncol=3))
+    
+    coords$X1 = as.character(coords$X1)
+    coords$X2 = as.numeric(as.character(coords$X2))
+    coords$X3 = as.numeric(as.character(coords$X3))
+    
+    if(unique(as.character(scomb$strand.x))=="1") {
+      pre = scomb %>% dplyr::filter(exon_chrom_end<coords$X2) %>% distinct()
+      pos = scomb %>% dplyr::filter(exon_chrom_end>coords$X2) %>% distinct()
+      
+    }
+    
+    
+    if(unique(as.character(scomb$strand.x))=="-1") {
+      pre = scomb %>% dplyr::filter(exon_chrom_end>coords$X2) %>% distinct()
+      pos = scomb %>% dplyr::filter(exon_chrom_end<coords$X2) %>% distinct()
+    }
+    
+   pre =  pre %>% group_by(variable) %>% 
+      summarise(sum.counts = sum(value)) %>% 
+      dplyr::right_join(pre, by = c("variable")) %>% 
+      distinct() %>% 
+      dplyr::mutate(categ="pre",key=j) %>% 
+      distinct()
+   
+   pos =  pos %>% group_by(variable) %>% 
+     summarise(sum.counts = sum(value)) %>% 
+     dplyr::right_join(pos, by = c("variable")) %>% 
+     distinct() %>% 
+     dplyr::mutate(categ="post",key=j) %>% 
+     distinct()
+   
+    
+    pre = rbind(pre,pos)
+    pre = pre %>% 
+      #dplyr::select(-c("external_gene_id.y","chromosome_name.y","start_position","end_position","strand.y" )) %>% 
+      dplyr::select(variable,sum.counts,key,categ) %>%
+      distinct()
+    
+    #fwrite(pre,file=sprintf("/Users/yellapav/Desktop/ipa/data/all_%s_pre_post.txt",i), append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=TRUE,quote = FALSE)
+    l[[i]] = pre
+  }
+}
+
+#install.packages("pryr")
+library(pryr)
+object_size(l)
+r = do.call(rbind,l)
+
+
+rrr = r %>% dplyr::select(variable,sum.counts,key,categ) %>%
+  distinct()%>% group_by(variable,key,categ) %>% 
+  summarise(sum=sum(sum.counts))
+
+rr=dcast((rrr),variable+key~categ,value.var="sum")
+#sub1 = (rr) %>% dplyr::filter(post.pos!="NA") %>% dplyr::mutate(ratio=pre.pos/(pre.pos+post.pos),type="POS")
+
+#sub2 = (rr) %>% dplyr::filter(is.na(post.pos)) %>% dplyr::mutate(ratio=pre.neg/(pre.neg+post.neg), type="NEG")
+
+#sub1=rbind(sub1,sub2)
+rr = rr %>% dplyr::mutate(ratio=pre/(pre+post))
+rr$type="NORMAL"
+rr[rr$variable %in% grep("SRR",as.character(unique(rr$variable)),value=T),]$type="TUMOR"
+
+rr = dplyr::left_join(rr,mer,by = "key")
+sub1 = rr
+nn = list(); j = 0; l=length(unique(sub1$external_gene_id))/100
+for(z in unique(sub1$external_gene_id)) {
+  j=j+1
+  sub11 = sub1 %>% dplyr::filter(external_gene_id==z)
+  t = sub11[sub11$type!="NORMAL",]
+  n = sub11[sub11$type=="NORMAL",]
+  pval=10
+  pval=try(wilcox.test(n$ratio,t$ratio)$p.value,silent = TRUE)
+  if(pval<0.005) {
+    nn[[z]]=pval
+    cat(c(z,"\t",j,"\t",round(j/l,digits=1),"% complete..\n"))
+  pdf(sprintf("~/Desktop/ipa/plots/ratio/%s_all.pdf",z))
+  p = ggplot(sub11,aes(key,ratio,fill=type))+geom_boxplot(outlier.size=0,aes(fill=type), alpha=0.05) + 
+    theme_bw(base_size=15)+ xlab("")+ylab("Pre / Post (exon counts)")+ 
+    geom_jitter(size=3,position = position_dodge(width=0.75),alpha=0.45,aes(group=type,color=factor(type)))+
+    theme(axis.text.x = element_text(angle = 0, hjust = 1),legend.position="top")
+  
+  print(p)
+  dev.off()
+  }
+}
+
+
+genes = as.data.frame(do.call(rbind,nn)) 
+colnames(genes) = c("pval"); genes$gene = rownames(genes);
+
+
+
+
+
+
+###### Heatmap ########
+sub1 = rr
+sub1 = sub1[sub1$external_gene_id %in% unique(genes$gene),]
+sub2 = sub1 %>% dplyr::mutate(group=ifelse(type=="NORMAL","NORMAL","TUMOR"), key1 = paste(external_gene_id,key,sep="_"))
+sub3 = sub2 %>% group_by(key1,group) %>% summarise(med = median(ratio)) %>% as.data.frame() 
+sub3 = dcast(sub3, key1 ~ group, value.var = "med") %>%
+  dplyr::filter(!(is.na(TUMOR) | is.na(NORMAL))) %>% 
+  dplyr::mutate(foldCH=abs(NORMAL-TUMOR)/TUMOR) %>% arrange(desc(foldCH)) %>% head(n=31)
+
+sub2_hm = sub2 %>% dplyr::select(variable, key1, ratio)
+sub2_hm=sub2_hm[sub2_hm$key1 %in% unique(sub3$key1),]
+
+sub2_hm = dcast(sub2_hm, key1 ~ variable, value.var ="ratio")
+rownames(sub2_hm) = sub2_hm$key1
+sub2_hm = sub2_hm %>% dplyr::select(-c(key1))
+sub2_hm=sub2_hm[complete.cases(sub2_hm), ]
+
+clinic= read.table("~/Desktop/ipa/commpass_clinic.txt",sep = "\t",header = T)
+clinic[is.na(clinic)] = 0
+
+colan = left_join(col.ann, mmrf[,c(1,4)], by = c("sample" = "Run"))
+colan = left_join(colan,clinic,by = c("patient" = "sample"))
+colan.t = colan
+###FAM46C
+colan = colan[,c(1,39,91)]
+colan[is.na(colan)] = 0
+
+colan = colan %>% dplyr::mutate(sum = FAM46C+delFAM46c) %>% 
+  dplyr::mutate(status = ifelse(sum==0, "NULL", 
+                                ifelse(sum==2,"DEL_MUT", 
+                                       ifelse(FAM46C==1,"MUT","DEL"))))
+
+##translocation HRD
+colan.t[is.na(colan.t)] = 0
+colan.t = colan.t %>% dplyr::mutate(sum = FAM46C+delFAM46c) %>% 
+  dplyr::mutate(status = ifelse(t_CCND1==1, "CCND1", 
+                                ifelse(t_MMSET==1,"MMSET", 
+                                       ifelse(t_MAF==1,"MAF", 
+                                              ifelse(t_MAFB==1,"MAFB", 
+                                                     ifelse(t_CCND3==1,"CCND3", 
+                                                            ifelse(t_MYC==1,"MYC", 
+                                                              ifelse(HRD==1,"HRD","NULL"))))))))
+#colan = colan %>% dplyr::mutate(delFAM46c=ifelse(delFAM46c==1,"DEL","NULL"))
+
+col.ann = as.data.frame(colnames(sub2_hm))
+colnames(col.ann) = c("sample")
+col.ann = (col.ann) %>% dplyr::mutate(type= ifelse(sample %in% grep("SRR",col.ann$sample,value=T), "TUMOR","NORMAL"))
+types = col.ann$type;color.annot=c("#7D093B","#60B96C","#D31996","#E9E9E9"); names(color.annot) = c("NORMAL","TUMOR","DEL","NULL")
+ha = HeatmapAnnotation(df = data.frame(type = types), 
+                       FAM46C = data.frame(FAM46C = as.vector(colan$status)), 
+                       Translocation = data.frame(Translocation = as.vector(colan$status)),
+                       col = list(type = c(color.annot[1:2]), 
+                                  FAM46C = c("DEL" = "#D31996","NULL" = "#E9E9E9","MUT" = "#52A20D", "DEL_MUT" = "#3F3451") ) )
+ha = HeatmapAnnotation(type = types, 
+                       FAM46C = colan$status, 
+                       Translocation = colan.t$status,
+                       col = list(type = c(color.annot[1:2]), 
+                                  FAM46C = c("DEL" = "#D31996","NULL" = "#E9E9E9","MUT" = "#52A20D", "DEL_MUT" = "#3F3451"),
+                                  Translocation = c("CCND1" = "#2FAD3B","NULL" = "#E9E9E9","CCND3" = "#CF0535", 
+                                  "HRD" = "#3D1C00", "MAF" = "#FEA014", "MAFB" = "#511A8E", "MMSET" = "#0580E7", "MYC" = "#FA2A00")) )
+
+pdf("~/Desktop/hm.pdf",width = 16, height = 10)
+Heatmap(as.matrix(sub2_hm), top_annotation = ha, clustering_method_columns = "ward.D",clustering_distance_columns =  "euclidean", column_km = 4)
+dev.off()
+
+cl = kmeans(t(as.matrix(sub2_hm)), centers = 4)$cluster
+cl=as.data.frame(cl); cl$sample = rownames(cl)
+fwrite(cl,file="/Users/yellapav/Desktop/ipa/data/clusters.txt", append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=FALSE,quote = FALSE)
+
+####### Tumor alone ######
+rr %>% dplyr::filter(external_gene_id=="IKZF1")
+
+
+####### Find relapse IPA ########
+
+
+mmrf = read.table("~/Downloads/SRA_MMRF_replase.txt",sep="\t",header=T) 
+mmrf$patient = substr(mmrf$visit.id,1,9)
+mmrf.rel = mmrf %>% dplyr::filter(time=="Confirm Progression") 
+mmrf = mmrf %>% dplyr::filter(patient %in% unique(mmrf.rel$patient)) %>% dplyr::filter(time!="Confirm Response") 
+
+ipa.all.relapse=lapply(unique(mmrf.rel$patient),find_ipa)
+
+ipa.all.relapse= do.call(rbind,ipa.all.relapse)
+ipa.all.relapse.t = ipa.all.relapse %>% dplyr::filter(patient=="MMRF_1380")
+
+m = list()
+for(i in unique(ipa.all.relapse$patient)) {
+  if(length(as.character(unique(ipa.all.relapse[ipa.all.relapse$patient==i,]$time)))==2){
+    ipa.all.relapse.t = ipa.all.relapse %>% dplyr::filter(patient==i)
+    x=ipa.all.relapse.t %>% dplyr::filter(visit==as.character(sort(unique(ipa.all.relapse.t$visit))[1])) %>% dplyr::select(gene); x = as.vector(x$gene)
+    y=ipa.all.relapse.t %>% dplyr::filter(visit==as.character(sort(unique(ipa.all.relapse.t$visit))[2])) %>% dplyr::select(gene);y = as.vector(y$gene)
+    un=union(x,y)
+    inter = paste(unlist(intersect(x,y)),collapse=":")
+    base=paste(unlist(setdiff(x,y)),collapse=":")
+    relapse=paste(unlist(setdiff(y,x)),collapse=":")
+    print(i)
+    df = as.data.frame(matrix(c(i,inter,base,relapse),nrow=1))
+    colnames(df) = c("Patient", "Common","Baseline","Relapse")
+    m[[i]] = df
+  }
+  
+}
+
+relapse = do.call(rbind,m)
+fwrite(relapse,file="~/Downloads/relapse.txt", append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=TRUE,quote = FALSE)
+common = table(((as.character(unlist(strsplit2(unlist(relapse$Common),split = ":")))))) %>% as.data.frame() %>% arrange(desc(Freq)) %>% dplyr::filter(Freq>2)
+common = common[common$Var1 %in% unique(tum_alone$external_gene_id),]
+baseline = table(((as.character(unlist(strsplit2(unlist(relapse$Baseline),split = ":")))))) %>% as.data.frame() %>% arrange(desc(Freq)) %>% dplyr::filter(Freq>2)
+baseline = baseline[baseline$Var1 %in% unique(tum_alone$external_gene_id),]
+relap = table(((as.character(unlist(strsplit2(unlist(relapse$Relapse),split = ":")))))) %>% as.data.frame() %>% arrange(desc(Freq)) %>% dplyr::filter(Freq>2)
+relap = relap[relap$Var1 %in% unique(tum_alone$external_gene_id),]
+
+fwrite(common,file="~/Downloads/common.txt", append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=TRUE,quote = FALSE)
+fwrite(baseline,file="~/Downloads/baseline.txt", append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=TRUE,quote = FALSE)
+fwrite(relap,file="~/Downloads/relap.txt", append=FALSE, sep="\t", eol="\n", row.names=FALSE, col.names=TRUE,quote = FALSE)
+
+setdiff(baseline$Var1,union(common$Var1,relap$Var1))
+setdiff(relap$Var1,union(common$Var1,baseline$Var1))
+setdiff(relap$Var1,un)
+
+fish = tum_alone %>% group_by(external_gene_id) %>% summarise(sum=sum(TUM)) %>% inner_join(common, by =c("external_gene_id" ="Var1")) %>% arrange(desc(Freq)) %>% dplyr::filter(sum>Freq) 
+
+for(i in 1:nrow(fish)) {
+  other=as.integer(fish[i,2])-as.integer(fish[i,3])
+pval = fisher.test(matrix(c(as.integer(fish[i,3]),77,other,649),nrow=2,byrow = T), alternative="greater")$p.value
+if(pval<0.05) {
+  print(matrix(c(as.character(fish[i,1]),other,fish[i,3]),nrow=1))
+}
+}
+
+find_ipa = function(sample) {
+  m = list()
+  mmrf.sub = mmrf[mmrf$patient==sample,]
+  for(i in unique(mmrf.sub$Run)) {
+    res.sub = results %>% dplyr::filter(sample==i)
+    temp = as.data.frame(as.character(unique(res.sub$external_gene_id)))
+    if(nrow(temp)>0) {
+    colnames(temp)= c("gene")
+    temp$visit = as.character(mmrf.sub[mmrf.sub$Run==i,]$visit.id)
+    temp$time = as.character(mmrf.sub[mmrf.sub$Run==i,]$time)
+    temp$patient = as.character(mmrf.sub[mmrf.sub$Run==i,]$patient)
+    m[[i]] = temp
+    } else {
+      temp = data.frame(matrix(c("N","N","N","N"),nrow=1))
+      colnames(temp)= c("gene","visit","time","patient")
+      m[[i]] = temp
+    }
+    
+  }
+  df = do.call(rbind,m)
+  return(df)
+}
+  
+  m.sub = m %>% dplyr::filter(ensembl_exon_id==exon);
+m.sub.pos = m.sub %>% dplyr::filter(type=="POS") ;
+m.sub.neg = m.sub %>% dplyr::filter(type=="NEG") ;
+return(wilcox.test(m.sub.pos$value, m.sub.neg$value)$p.value)
+}
+
+
+
+######### Survival ##########
+multi = read.table("~/Downloads/ipa_survival_multivariate1.csv",sep=",",header=T)
+multi_gene = multi[grep("ENSG0",multi$X),] %>% dplyr::filter(p.value<0.05) 
+nom_tum %>% dplyr::filter(external_gene_id %in% unique(multi_gene$gene) ) %>% dplyr::filter(NOM==0)
+
+
+
+
+
+
+
+
+
+
+
+
+
+ratio.mat.sub = ratio.mat[,1:50]
+grdf = as.data.frame(strsplit2(rownames(ratio.mat.sub),"_|:")) %>% dplyr::mutate(V3=as.numeric(as.character(V3)),V4=as.numeric(as.character(V4)))
+
+rowRanges <- GRanges(seqnames=Rle(grdf$V2), IRanges(grdf$V3, grdf$V4), 
+                     strand=rep("+",nrow(grdf)), feature_id=rownames(ratio.mat.sub))
+colData = DataFrame(Treatment=c(rep("NORMAL",5),rep("TUMOR",dim(ratio.mat.sub)[2]-5)), row.names = colnames(ratio.mat.sub))
+
+se = SummarizedExperiment(assays=list(counts=as.matrix(ratio.mat.sub)), rowRanges=rowRanges, colData=colData)
+system.time(rsecFluidigm<-RSEC(se, isCount = FALSE,nPCADims=10,ncores=6,combineMinSize=5,random.seed=176201))
+
+defaultMar<-par("mar")
+plotCMar<-c(1.1,8.1,4.1,1.1)
+par(mar=plotCMar)
+plotClusters(rsecFluidigm,main="Clusters from RSEC", whichClusters="workflow", sampleData=c("NORMAL","TUMOR"), axisLine=-1)
+
+plotCoClustering(rsecFluidigm,whichClusters=c("mergeClusters","combineMany"))
+
+
+ce = clusterMany(se, clusterFunction = "pam", ks = 2:8, run = TRUE, isCount = FALSE, reduceMethod = "var", nVarDims = c(15, 30, 45))
+
+clusterLabels(ce) = sub("FilterDims", "", clusterLabels(ce))
+plotClusters(ce, whichClusters = "workflow", axisLine = -1, clusterLabels = colnames(ce))
+
+##### Play ####
+library("scRNAseq")
+library(clusterExperiment)
+./Downloads/data/Morder.RData
+load("~/Downloads/data/Morder.RData")
+
+counts <- matrix(runif(nrows * ncols, 1, 1e4), nrows)
+
+rowRanges1 <- GRanges(rep(c("chr1", "chr2"), c(50, 150)),
+                     IRanges(floor(runif(200, 1e5, 1e6)), width=100),
+                     strand=sample(c("+", "-"), 200, TRUE),
+                     feature_id=sprintf("ID%03d", 1:200))
+colData1 <- DataFrame(Treatment=rep(c("ChIP", "Input"), 3),
+                     row.names=LETTERS[1:6])
+
+fcsB = read.FCS("~/Downloads/data/Bendall_2011.fcs") 
+markersB = readr::read_csv("~/Downloads/data/Bendall_2011_markers.csv")
+mt = match(markersB$isotope, colnames(fcsB))
+stopifnot(!any(is.na(mt)))
+colnames(fcsB)[mt] = markersB$marker
+
+
+
+simdat = lapply(c(0, 8), function(mx) {
+  lapply(c(0,8), function(my) {
+    tibble(x = rnorm(100, mean = mx, sd = 2),
+           y = rnorm(100, mean = my, sd = 2),
+           class = paste(mx, my, sep = ":"))
+  }) %>% bind_rows
+}) %>% bind_rows
+
+ratio.mat.df = ratio.mat
+ratio.mat.df$sample = rownames(ratio.mat)
+
+
+cl = kmeans(t(as.matrix(ratio.mat)), centers = 4)$cluster
+cl=as.data.frame(cl); cl$sample = rownames(cl)
+
+
+i=2;
+for(j in 1:30) {
+  print(j)
+genes.2 = cbind(melt(ratio.mat[i,]),melt(ratio.mat[j,])); 
+colnames(genes.2)[2] = rownames(ratio.mat)[i]; colnames(genes.2)[4] = rownames(ratio.mat)[j]; colnames(genes.2)[1]="sample"
+colnames(genes.2)[2] = "val1"; colnames(genes.2)[4] = "val2"; colnames(genes.2)[1]="sample"
+cl.val = left_join(cl,genes.2, by = "sample")
+print(ggplot(cl.val,aes(val1,val2,col=factor(cl)))+geom_point()+coord_fixed()+ xlab(j))
+Sys.sleep(3)
+}
+
+
+
+ratio.mat =  dcast(ratio, key ~ variable, value.var = "ratio")
+ratio.mat = ratio.mat[ratio.mat$key %in% unique(head(pvals.filter[,1],n=60)),]
+temp = strsplit2(ratio.mat$key,"_") %>% as.data.frame() %>% dplyr::mutate(key = paste(V1,V3,sep="_")) %>% dplyr::select(key) 
+rownames(ratio.mat) = temp$key; ratio.mat = ratio.mat %>% dplyr::select(-c(key)) 
+multi= list()
+for(j in 1:1000) {
+wss = tibble(k = 1:8, value = NA_real_)
+#wss$value[1] = sum(scale(cl.val[,c("val1","val2")], scale = FALSE)^2)
+
+for (i in 1:nrow(wss)) {
+  km  = kmeans(t(as.matrix(ratio.mat)), iter.max = 100,centers = wss$k[i])
+  wss$value[i] = sum(km$withinss)
+  nom=as.data.frame(km$cluster)
+  nom$sample=rownames(nom)
+}
+multi[[j]] =wss 
+}
+
+
+plots = do.call(rbind,multi) %>% as.data.frame()
+tgc = summarySE(plots, measurevar="value", groupvars=c("k"))
+
+
+# Use 95% confidence intervals instead of SEM
+ggplot(tgc, aes(x=k, y=value)) + 
+  geom_bar(position=position_dodge(), stat="identity") +
+  geom_errorbar(aes(ymin=value-ci, ymax=value+ci), width=.2,position=position_dodge(.9))
+ggplot(do.call(rbind,multi),aes(k,value,fill=factor(k)))+geom_boxplot(outlier.size = 0)+ylab("within-group-ss")+theme_bw(base_size = 12)
+
+
+
+
+library("fpc")
+library("cluster")
+
+
+
+CH = tibble(
+  k = 1:12,
+  value = sapply(k, function(i) {
+    p = kmeans(t(as.matrix(ratio.mat)), iter.max = 100,centers = i)
+    calinhara(t(as.matrix(ratio.mat)), p$cluster)
+  })
+)
+
+ggplot(CH, aes(x = k, y = value)) + geom_line() + geom_point() +
+  ylab("between-group/within-group-ss (CH index)")
+
+
+plots = do.call(rbind,multi) %>% as.data.frame()
+
+ggplot(plots,aes(k,value,fill=factor(k)))+geom_boxplot(outlier.size = 0)+ylab("between-group/within-group-ss")+theme_bw(base_size = 12)
+
+
+pamfun = function(x, k) {
+  p = kmeans(x , iter.max = 100,centers = k)
+  list(cluster = p$cluster) }
+
+gss = clusGap(t(as.matrix(ratio.mat)), FUN = pamfun, K.max = 8, B = 50,
+              verbose = FALSE)
+plot_gap = function(x) {
+  gstab = data.frame(x$Tab, k = seq_len(nrow(x$Tab)))
+  ggplot(gstab, aes(k, gap)) + geom_line() +
+    geom_errorbar(aes(ymax = gap + SE.sim,
+                      ymin = gap - SE.sim), width=0.1) +
+    geom_point(size = 3, col=  "red")
+}
+plot_gap(gss)
+
+
+
+
